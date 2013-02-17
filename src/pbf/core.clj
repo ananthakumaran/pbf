@@ -1,6 +1,7 @@
 (ns pbf.core
   (:gen-class)
-  (:use [flatland.protobuf.core])
+  (:use pbf.worker)
+  (:use flatland.protobuf.core)
   (:use clojure.java.io))
 
 (import java.util.zip.Inflater)
@@ -121,14 +122,17 @@
         c (* 2 (Math/atan2 (Math/sqrt a) (Math/sqrt (- 1 a))))]
     (* 6371 c)))
 
-
-
 ;; test
 (defn -main []
-  (with-open [stream (input-stream "/Users/ananthakumaran/work/pbf/india.osm.pbf")]
-    (node-walker stream (fn [nodes]
-                          (doseq [node nodes]
-                            (if (and (contains? (:keys_vals node) "amenity")
-                                     (= (get (:keys_vals node) "amenity") "restaurant")
-                                     (< (distance (:lat node) (:lon node) 12.9833 77.5833) 20))
-                              (println node)))))))
+  (let [worker (create-woker)]
+    (with-open [stream (input-stream "/Users/ananthakumaran/work/pbf/india.osm.pbf")]
+      (node-walker stream
+                   (fn [nodes]
+                     (worker
+                      (fn [] (doseq [node nodes]
+                               (if (and (contains? (:keys_vals node) "amenity")
+                                        (let [amenity (get (:keys_vals node) "amenity")]
+                                          (some #(= amenity %) ["bar" "cafe" "fast_food" "ice_cream" "pub" "restaurant"]))
+                                        (< (distance (:lat node) (:lon node) 12.9833 77.5833) 20))
+                                 (println node)))))))
+      (shutdown-agents))))
