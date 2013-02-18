@@ -5,5 +5,6 @@
             :url "http://www.eclipse.org/legal/epl-v10.html"}
   :main pbf.core
   :dependencies [[org.clojure/clojure "1.4.0"]
-                 [org.flatland/protobuf "0.7.2"]]
+                 [org.flatland/protobuf "0.7.2"]
+                 [com.taoensso/timbre "1.5.2"]]
   :plugins [[lein-protobuf "0.3.1"]])

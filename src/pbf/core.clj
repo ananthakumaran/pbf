@@ -1,10 +1,12 @@
 (ns pbf.core
   (:gen-class)
-  (:use pbf.worker)
+  (:use [pbf worker geo])
   (:use flatland.protobuf.core)
-  (:use clojure.java.io))
+  (:use clojure.java.io)
+  (:require [taoensso.timbre :as log]))
 
 (import java.util.zip.Inflater)
+(import java.util.Date)
 
 (import crosby.binary.Fileformat$BlobHeader)
 (import crosby.binary.Fileformat$Blob)
@@ -77,6 +79,10 @@
              hash (apply hash-map (map (partial nth string-table) current))]
          (recur (drop 1 rest) string-table (conj result hash))))))
 
+(defn p-keys-vals-map [tags-table keys vals]
+  (let [lookup (partial nth tags-table)]
+    (into {} (map #(-> [(lookup %1) (lookup %2)]) keys vals))))
+
 (defn string-table [primitive-block]
   (map #(. % toStringUtf8) (:s (:stringtable primitive-block))))
 
@@ -84,55 +90,109 @@
   (fn [val]
     (* 0.000000001 (+ offset (* granularity val)))))
 
-(defn dense-map [dense string-table latc lonc]
+(defn timestamp-calculator [granularity]
+  (if granularity
+    (fn [t]
+      (when t
+        (Date. (* t granularity))))
+    (fn [t] nil)))
+
+(defrecord Group [nodes ways relations])
+(defrecord Node [id lat lon tags])
+(defrecord Way [id refs tags info])
+(defrecord Member [id role type])
+(defrecord Relation [id tags members info])
+(defrecord Info [id version timestamp changeset user visible])
+
+(defn info [i tags-table timestamp-calculator]
+  (when i
+    (Info. (:uid i)
+           (:version i)
+           (timestamp-calculator (:timestamp i))
+           (:changeset i)
+           (nth tags-table (:user_sid i))
+           (:visible i))))
+
+(defn dense-map [dense tags-table latc lonc]
   (map (fn [id lat lon keys_vals]
-         {:id id, :lat (latc lat), :lon (lonc lon), :keys_vals keys_vals})
+         (Node. id (latc lat) (lonc lon) keys_vals))
        (delta-decode (:id dense))
        (delta-decode (:lat dense))
        (delta-decode (:lon dense))
-       (keys-vals-map (:keys_vals dense) string-table)))
+       (keys-vals-map (:keys_vals dense) tags-table)))
 
-;; todo handle nodes,ways,relations,changesets in PrimitiveGroup
-(defn node-walker [stream callback]
+(defn nodes [primitive-group tags-table lat-calculator lon-calculator]
+  (concat []
+          (dense-map (:dense primitive-group) tags-table lat-calculator lon-calculator)))
+
+(defn ways [primitive-group tags-table t-calculator]
+  (map (fn [way]
+         (Way. (:id way)
+               (delta-decode (:refs way))
+               (p-keys-vals-map tags-table (:keys way) (:vals way))
+               (info (:info way) tags-table t-calculator)))
+       (:ways primitive-group)))
+
+(defn relations [primitive-group tags-table t-calculator]
+  (map (fn [relation]
+         (Relation. (:id relation)
+                    (p-keys-vals-map tags-table (:keys relation) (:vals relation))
+                    (map (fn [role-id member-id type]
+                           (Member. member-id (nth tags-table role-id) type))
+                         (:roles_sid relation)
+                         (delta-decode (:memids relation))
+                         (:types relation))
+                    (info (:info relation) tags-table t-calculator)))
+       (:relations primitive-group)))
+
+(defn walk [stream types callback]
   (when-let [block (next-block stream)]
     (let [[header blob] block]
       (case (:type header)
-        "OSMHeader" (println "headerblock")
+        "OSMHeader" nil
         "OSMData"
-        (let [primitive-block (blob-to-block blob PrimitiveBlock)]
-          (callback (dense-map (:dense (first (:primitivegroup primitive-block)))
-                               (string-table primitive-block)
-                               (degree-calculator (:lat_offset primitive-block) (:granularity primitive-block))
-                               (degree-calculator (:lon_offset primitive-block) (:granularity primitive-block))))))
-      (recur stream callback))))
+        (let [primitive-block (blob-to-block blob PrimitiveBlock)
+              lat-calculator (degree-calculator (:lat_offset primitive-block) (:granularity primitive-block))
+              lon-calculator (degree-calculator (:lon_offset primitive-block) (:granularity primitive-block))
+              t-calculator (timestamp-calculator (:date_granularity primitive-block))
+              primitive-groups (:primitivegroup primitive-block)
+              tags-table (string-table primitive-block)]
+          (doseq [primitive-group primitive-groups]
+            (callback (Group. (if (some #{:node} types)
+                                (nodes primitive-group tags-table lat-calculator lon-calculator)
+                                '())
 
-(defn to-rad [v]
-  (* v (/ Math/PI 180)))
+                              (if (some #{:way} types)
+                                (ways primitive-group tags-table t-calculator)
+                                '())
 
-;; http://www.movable-type.co.uk/scripts/latlong.html
-(defn distance [lat1 lon1 lat2 lon2]
-  (let [dlat (to-rad (- lat2 lat1))
-        dlon (to-rad (- lon2 lon1))
-        a (+ (* (Math/sin (/ dlat 2))
-                (Math/sin (/ dlat 2)))
-             (* (Math/sin (/ dlon 2))
-                (Math/sin (/ dlon 2))
-                (Math/cos (to-rad lat1))
-                (Math/cos (to-rad lat2))))
-        c (* 2 (Math/atan2 (Math/sqrt a) (Math/sqrt (- 1 a))))]
-    (* 6371 c)))
+                              (if (some #{:relation} types)
+                                (relations primitive-group tags-table t-calculator)
+                                '()))))))
+      (recur stream types callback))))
+
 
 ;; test
 (defn -main []
   (let [worker (create-woker)]
     (with-open [stream (input-stream "/Users/ananthakumaran/work/pbf/india.osm.pbf")]
-      (node-walker stream
-                   (fn [nodes]
-                     (worker
-                      (fn [] (doseq [node nodes]
-                               (if (and (contains? (:keys_vals node) "amenity")
-                                        (let [amenity (get (:keys_vals node) "amenity")]
-                                          (some #(= amenity %) ["bar" "cafe" "fast_food" "ice_cream" "pub" "restaurant"]))
-                                        (< (distance (:lat node) (:lon node) 12.9833 77.5833) 20))
-                                 (println node)))))))
+      (walk stream [:way :relation :node]
+            (fn [group]
+              (worker
+               (fn []
+                 (when (not (empty? (:relations group)))
+                   (log/info "relations callback ---")
+                   (log/info (print-str (count (:relations group)))))
+                 (when (not (empty? (:ways group)))
+                   (log/info "ways callback ---")
+                   (log/info (print-str (count (:ways group)))))
+                 (when (not (empty? (:nodes group)))
+                   (log/info "nodes callback ---")
+                   (log/info (print-str (count (:nodes group)))))
+                 #_(doseq [node (:nodes group)]
+                     (if (and (contains? (:tags node) "amenity")
+                              (let [amenity (get (:tags node) "amenity")]
+                                (some #(= amenity %) ["bar" "cafe" "fast_food" "ice_cream" "pub" "restaurant"]))
+                              (< (distance (:lat node) (:lon node) 12.9833 77.5833) 20))
+                       (println node)))))))
       (shutdown-agents))))

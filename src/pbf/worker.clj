@@ -1,4 +1,5 @@
-(ns pbf.worker)
+(ns pbf.worker
+  (:require [taoensso.timbre :as log]))
 (import java.util.concurrent.Semaphore)
 
 (defn create-woker
@@ -10,7 +11,10 @@
          (.acquire semaphore)
          (try
            (future (try (work)
+                        (catch Throwable e
+                          (log/error (.printStackTrace e) "worker failed")
+                          (throw e))
                         (finally (.release semaphore))))
-           (catch Exception e
+           (catch Throwable e
              (.release semaphore)
              (throw e)))))))
