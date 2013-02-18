@@ -1,6 +1,6 @@
 (defproject pbf "0.1.0-SNAPSHOT"
   :description "openstreetmap pbf parser"
-  :url "https://bitbucket.org/ananthakumaran/pbf"
+  :url "https://github.com/ananthakumaran/pbf"
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
   :main pbf.core
