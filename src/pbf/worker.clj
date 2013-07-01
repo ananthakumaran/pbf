@@ -2,9 +2,9 @@
   (:require [taoensso.timbre :as log]))
 (import java.util.concurrent.Semaphore)
 
-(defn create-woker
+(defn create-worker
   ([]
-     (create-woker (.availableProcessors (Runtime/getRuntime))))
+     (create-worker (.availableProcessors (Runtime/getRuntime))))
   ([limit]
      (let [semaphore (Semaphore. limit)]
        (fn [work]

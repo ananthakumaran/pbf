@@ -174,7 +174,7 @@
 
 ;; test
 (defn -main []
-  (let [worker (create-woker)]
+  (let [worker (create-worker)]
     (with-open [stream (input-stream "/Users/ananthakumaran/work/pbf/india.osm.pbf")]
       (walk stream [:way :relation :node]
             (fn [group]
